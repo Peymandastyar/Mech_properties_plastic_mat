@@ -1,0 +1,214 @@
+import numpy as np np.set_printoptions(precision=3)
+import matplotlib.pyplot as plt
+%matplotlib inline
+import seaborn as sns sns.set(rc={"figure.dpi":100, "savefig.dpi":300}) sns.set_context("notebook") sns.set_style("ticks")
+import scipy
+import scipy.stats as st
+import urllib.request
+import os
+url = "https://github.com/PredictiveScienceLab/data-analytics-se/raw/master/lecturebook/data/stress_strain.txt"
+download(url)
+data =  np.loadtxt('stress_strain.txt')
+# Strain
+x = data[:, 0] 
+# Stress in MPa 
+y = data[:, 1]
+# The point at which the stress-strain curve stops being linear
+epsilon_l = 0.04
+# Relevant data (this is nice way to get the linear part of the stresses and straints)
+x_rel = x[x < 0.04]
+y_rel = y[x < 0.04]
+
+from sklearn.model_selection import train_test_split train_percentage = 0.7
+x_train, x_valid, y_train, y_valid = train_test_split(
+x_rel, y_rel, test_size=1-train_percentage, random_state=42)
+plt.figure()
+plt.plot(
+    x_train,
+    y_train,
+    'ro',
+    markersize=2,
+    label='Training data') 
+plt.plot(
+    x_valid,
+    y_valid,
+    'bx',
+    markersize=2,
+    label='Validation data')
+plt.xlabel('$\epsilon$ (strain in %)')
+plt.ylabel('$\sigma$ (stress in MPa)')
+plt.legend(loc='best');
+
+# We know that the constant should be zero because of the physics of the problem.
+# So, let's force it to be zero by NOT including the constant term in our model
+num_train = int(x_rel.shape[0] * train_percentage)
+Phi_train = x_train.reshape((num_train, 1))
+# Performing Bayesian linear regression using scikit learn
+from sklearn.linear_model import BayesianRidge
+model = BayesianRidge(fit_intercept=False).fit(Phi_train, y_train) 
+sigma = np.sqrt(1.0 / model.alpha_)
+print('sigma = {0:1.2f}'.format(sigma**2))
+alpha = model.lambda_
+print('alpha = {0:1.2f}'.format(alpha))
+
+y_valid_p_mean, y_valid_p_std = model.predict(x_valid[:, None], return_s td=True)
+MSE = np.mean((y_valid_p_mean - y_valid) ** 2)
+print('MSE = {0:1.2f}'.format(MSE))
+
+# Computes and plos the standarized errors for the validation data.
+
+std_errs = (y_valid_p_mean - y_valid) / y_valid_p_std
+fig, ax = plt.subplots(dpi=100)
+ax.plot(std_errs, 'o')
+obs_ids = np.arange(std_errs.shape[0])
+ax.plot(obs_ids, 1.96 * np.ones(obs_ids.shape[0]), 'r')
+ax.plot(obs_ids, -1.96 * np.ones(obs_ids.shape[0]), 'r')
+ax.set_xlabel('Observation id')
+ax.set_ylabel('Standarized error');
+
+fig, ax = plt.subplots(dpi=100)
+st.probplot(std_errs, dist=st.norm, plot=ax);
+
+# visualizing the epistemic and the aleatory uncertainty about the stress-strain curve in the elastic regime.
+xx = np.linspace(0.0, 0.05, 100)
+# Use the model to get the predictive mean and standard deviation: yy_mean, yy_measured_std = model.predict(xx[:, None], return_std=True) # Separate the epistemic uncertainty
+yy_std = np.sqrt(yy_measured_std ** 2 - sigma**2)
+# Plot
+fig, ax = plt.subplots()
+ax.plot(xx, yy_mean, 'r')
+# Epistemic lower bound
+yy_le = yy_mean - 2.0 * yy_std
+# Epistemic upper bound
+yy_ue = yy_mean + 2.0 * yy_std
+# Epistemic + aleatory lower bound
+yy_lae = yy_mean - 2.0 * yy_measured_std
+# Episemic + aleatory upper bound
+yy_uae = yy_mean + 2.0 * yy_measured_std
+ax.fill_between(xx, yy_le, yy_ue, color='red', alpha=0.25) ax.fill_between(xx, yy_lae, yy_le, color='green', alpha=0.25) ax.fill_between(xx, yy_ue, yy_uae, color='green', alpha=0.25)
+# plot the data again
+ax.plot(x_train, y_train, 'kx', label='Observed data')
+plt.xlabel('$\epsilon$ (strain in %)', fontsize=14)
+plt.ylabel('$\sigma$ (stress in MPa)', fontsize=14)
+plt.legend(loc='best', fontsize = 14);
+
+
+# this part finds the posterior of the Young modulus E conditioned on the data.
+# The posterior mean of the weights is here
+m_norm = model.coef_
+print(m_norm)
+# The posterior covariance matrix for the weights is here
+S_norm = model.sigma_
+print(S_norm)
+# Create a Normal random variable to represent this
+E_post = st.norm(loc=m_norm[0], scale=np.sqrt(S_norm[0, 0])) # Plot the
+PDF of E_post
+Es = np.linspace(E_post.ppf(0.001), E_post.ppf(0.999), 100)
+fig, ax = plt.subplots()
+ax.plot(Es, E_post.pdf(Es))
+ax.set_xlabel('$E$ (in MPa)')
+ax.set_ylabel('Posterior probability')
+
+this part takes five samples of stress-strain curve in the elastic regime and visualizes them.
+fig, ax = plt.subplots(dpi=100) for i in range(5):
+    E = E_post.rvs()
+    yy_sample = E * xx
+    ax.plot(xx, yy_sample, 'r', lw=0.5)
+# plot the data again
+ax.plot(x_train, y_train, 'kx', label='Observed data')
+plt.xlabel('$\epsilon$ (strain in %)', fontsize=14)
+plt.ylabel('$\sigma$ (stress in MPa)', fontsize=14)
+plt.legend(loc='best', fontsize = 14)
+
+
+#Estimation of the ultimate strength
+train_percentage = 0.7
+x_train, x_valid, y_train, y_valid = train_test_split(x, y, test_size=1-train_percentage, random_state=42)
+def compute_design_matrix(Epsilon, epsilon_l, d):
+
+# Sanity check
+assert isinstance(Epsilon, np.ndarray)
+assert Epsilon.ndim == 1, 'Pass the array as epsilon.flatten(), if i t is two dimensional'
+n = Epsilon.shape[0]
+# The design matrix:
+Phi = np.ndarray((n, d))
+# The step function evaluated at all the elements of Epsilon. # You can use it if you want.
+Step = np.ones(n)
+Step[Epsilon < epsilon_l] = 0
+# Build the design matrix
+Phi[:, 0] = Epsilon# Your code here
+for i in range(2, d+1):
+        Phi[:, i-1] = ((i - 1) * epsilon_l ** i - i * epsilon_l ** (i - 1) * Epsilon+ Epsilon ** i) * Step 
+return Phi
+
+d=4
+eps = np.linspace(0, x.max(), 100)
+Phis = compute_design_matrix(eps, epsilon_l, d) fig, ax = plt.subplots(dpi=100)
+ax.plot(eps, Phis)
+ax.set_xlabel('$\epsilon$ (strain in %))') ax.set_ylabel('$\phi_i(\epsilon)$');
+
+from sklearn.linear_model import ARDRegression
+Phi_train = compute_design_matrix(x_train, epsilon_l, d)
+model = ARDRegression(fit_intercept=False).fit(Phi_train, y_train)
+
+Phi_valid = compute_design_matrix(x_valid, epsilon_l, d) 
+y_valid_p_mean, y_valid_p_std = model.predict(Phi_valid, return_std=True )
+MSE = np.mean((y_valid_p_mean - y_valid) ** 2)
+print('MSE = {0:1.2f}'.format(MSE))
+
+
+
+# Visualizing the epistemic and aleatory uncertainty in the stess-strain relation.
+sigma = np.sqrt(1.0 / model.alpha_)
+xx = np.linspace(0.0, x.max(), 100)
+Phi_xx = compute_design_matrix(xx, epsilon_l, d)
+# Use the model to get the predictive mean and standard deviation: yy_mean, yy_measured_std = model.predict(Phi_xx, return_std=True) # Separate the epistemic uncertainty
+yy_std = np.sqrt(yy_measured_std ** 2 - sigma**2)
+# Plot
+fig, ax = plt.subplots(dpi=100)
+ax.plot(x_train, y_train, 'kx', label='Observed data')
+ax.plot(xx, yy_mean, 'r')
+# Epistemic lower bound
+yy_le = yy_mean - 2.0 * yy_std
+# Epistemic upper bound
+yy_ue = yy_mean + 2.0 * yy_std
+# Epistemic + aleatory lower bound
+yy_lae = yy_mean - 2.0 * yy_measured_std
+# Episemic + aleatory upper bound
+yy_uae = yy_mean + 2.0 * yy_measured_std
+ax.fill_between(xx, yy_le, yy_ue, color='red', alpha=0.25) ax.fill_between(xx, yy_lae, yy_le, color='green', alpha=0.25) ax.fill_between(xx, yy_ue, yy_uae, color='green', alpha=0.25)
+# plot the data again
+plt.xlabel('$\epsilon$ (strain in %)', fontsize=14) plt.ylabel('$\sigma$ (stress in MPa)', fontsize=14) plt.legend(loc='best', fontsize = 14);
+
+
+
+# this part finds the ultimate strength
+
+# The posterior mean of the weights is here (this is for the normalized
+ features, however)
+m_norm = model.coef_
+# The posterior covariance matrix for the weights is here (also for the
+ normalized features)
+S_norm = model.sigma_
+# The posterior of the weights
+w_post = st.multivariate_normal(mean=m_norm, cov=S_norm)
+# The number of samples to take
+num_post_samples = 1000
+# Storing the ultimate strength of each one of the posterior samples ultimate_strength_post_samples = np.ndarray((num_post_samples,))
+# Start taking samples
+for n in range(num_post_samples):
+    w_sample = w_post.rvs()
+    yy_sample = np.dot(Phi_xx, w_sample)
+    ultimate_strength_post_samples[n] = np.max(yy_sample)
+# Find a 95% credible interval for the ultimate strength
+mu_025 = np.percentile(ultimate_strength_post_samples, 2.5, axis=0) 
+mu_975 = np.percentile(ultimate_strength_post_samples, 97.5, axis=0) 
+print(f'95% Confidence Interval: {mu_025}, {mu_975}')
+# Do the histogram
+fig, ax = plt.subplots(dpi=100) ax.hist(ultimate_strength_post_samples, density=True, alpha=0.5) ax.set_xlabel('$\sigma_y$ (in MPa)')
+ax.set_ylabel('Posterior probability');
+# Pick a value for the ultimate strength.
+print(f'Pick a value for the ultimate strength.: {np.median(ultimate_str ength_post_samples)}')
+
+
+
+
